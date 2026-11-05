@@ -16,11 +16,47 @@ import { CameraLogCatalogStore, DeviceHistoryStore, GroupNameStore, KnownDeviceS
 const isDebug = !app.isPackaged
 let win: BrowserWindow | null = null
 
+const SPLASH_MIN_MS = 1_500
+const SPLASH_MAX_MS = 15_000
+
+/** Loads one of the renderer's pages: the Vite dev server in `npm run dev`, else the built file. */
+function loadPage(w: BrowserWindow, page: 'index' | 'splash') {
+  const devUrl = process.env['ELECTRON_RENDERER_URL']
+  if (isDebug && devUrl) void w.loadURL(page === 'index' ? devUrl : new URL(`${page}.html`, devUrl).toString())
+  else void w.loadFile(join(__dirname, `../renderer/${page}.html`))
+}
+
+/** Frameless, transparent startup window with the logo (src/renderer/splash.html). */
+function createSplash(): BrowserWindow {
+  const s = new BrowserWindow({
+    width: 580,
+    height: 540,
+    frame: false,
+    transparent: true,
+    backgroundColor: '#00000000',
+    hasShadow: false,
+    resizable: false,
+    movable: true,
+    skipTaskbar: true,
+    alwaysOnTop: true,
+    // Shown straight away: it's transparent, so there's no blank frame before the page paints.
+    show: true,
+    center: true,
+    icon: app.isPackaged ? undefined : join(__dirname, '../../build/icon.ico'),
+    webPreferences: { sandbox: true, contextIsolation: true }
+  })
+  loadPage(s, 'splash')
+  return s
+}
+
 function send(channel: string, ...args: unknown[]) {
   if (win && !win.isDestroyed()) win.webContents.send(channel, ...args)
 }
 
 app.whenReady().then(() => {
+  // Transparent splash first; the main window is shown once it has rendered (and the splash has had a moment).
+  const splash = createSplash()
+  const splashShownAt = Date.now()
   const dataDir = app.getPath('userData')
   const known = new KnownDeviceStore(dataDir)
   const history = new DeviceHistoryStore(dataDir)
@@ -124,11 +160,15 @@ app.whenReady().then(() => {
   })
 
   win = new BrowserWindow({
-    width: 1000,
-    height: 820,
-    minWidth: 420,
-    minHeight: 500,
+    width: 1280,
+    height: 860,
+    minWidth: 800,
+    minHeight: 560,
+    show: false,
+    backgroundColor: '#0b0d10',
     title: 'Camtraption Desktop',
+    // Packaged builds take the icon from the exe; dev runs need it explicitly.
+    icon: app.isPackaged ? undefined : join(__dirname, '../../build/icon.ico'),
     autoHideMenuBar: true,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
@@ -140,8 +180,17 @@ app.whenReady().then(() => {
     if (e.level === 'error') console.error('[renderer]', e.message)
   })
   win.webContents.on('render-process-gone', (_e, details) => console.error('[renderer] process gone:', details.reason, details.exitCode))
-  if (isDebug && process.env['ELECTRON_RENDERER_URL']) win.loadURL(process.env['ELECTRON_RENDERER_URL'])
-  else win.loadFile(join(__dirname, '../renderer/index.html'))
+  loadPage(win, 'index')
+
+  let revealed = false
+  const reveal = () => {
+    if (revealed || !win || win.isDestroyed()) return
+    revealed = true
+    win.show()
+    if (!splash.isDestroyed()) splash.destroy()
+  }
+  win.once('ready-to-show', () => setTimeout(reveal, Math.max(0, SPLASH_MIN_MS - (Date.now() - splashShownAt))))
+  setTimeout(reveal, SPLASH_MAX_MS)  // never leave the user staring at the splash
 
   ipcMain.on('isDebugSync', (e) => { e.returnValue = isDebug })
 

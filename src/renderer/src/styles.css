@@ -51,7 +51,9 @@ input, select, textarea { user-select: text; }
   height: 48px; padding: 0 12px 0 16px; flex: none;
   background: var(--surface); border-bottom: 1px solid var(--divider);
 }
-.appbar .brand { font-size: 15px; font-weight: 600; color: var(--primary-strong); letter-spacing: 0.2px; white-space: nowrap; }
+.appbar .brand { display: flex; align-items: center; gap: 8px; font-size: 15px; font-weight: 600; color: var(--primary-strong); letter-spacing: 0.2px; white-space: nowrap; }
+/* The logo's gear ring is black: a faint light halo keeps it visible on the dark bar. */
+.appbar .brand img { width: 30px; height: 30px; object-fit: contain; filter: drop-shadow(0 0 1px rgba(207, 226, 255, 0.6)); }
 .appbar .spacer { flex: 1; }
 
 .body { flex: 1; min-height: 0; display: flex; }
@@ -98,6 +100,7 @@ input, select, textarea { user-select: text; }
   pointer-events: none; color: var(--on-variant);
 }
 .watermark .glyph { font-size: 120px; opacity: 0.08; }
+.watermark .mark { width: min(60%, 420px); max-height: 60%; object-fit: contain; opacity: 0.08; filter: grayscale(0.2) drop-shadow(0 0 2px #cfe2ff); }
 
 /* ─── Tabs ──────────────────────────────────────────────────────────────── */
 

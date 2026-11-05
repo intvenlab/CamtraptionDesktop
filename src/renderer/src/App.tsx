@@ -7,6 +7,7 @@ import { STALE_TIMEOUT_MS } from '../../shared/advert'
 import { HUB_STREAM_SCAN } from '../../shared/hubProtocol'
 import { AdapterState, BleDevice, DeviceType, GattStatus, makeDevice } from '../../shared/types'
 import { api } from './api'
+import logoUrl from './assets/logo.png'
 import { EmptyState, Tabs } from './components'
 import { GattContext, ToastContext } from './context'
 import { BackContext, MainTab, PaneActiveContext, PaneRoot, PaneView } from './nav'
@@ -159,7 +160,7 @@ export default function App() {
   const renderView = (v: PaneView): React.ReactNode => {
     switch (v.kind) {
       case 'empty':
-        return <EmptyState glyph="📷" text="Select a Kit or device on the left" />
+        return <EmptyState image={logoUrl} text="Select a Kit or device on the left" />
       case 'group':
         return (
           <GroupScreen
@@ -227,7 +228,7 @@ export default function App() {
         <BackContext.Provider value={backRef}>
           <div className="shell">
             <div className="appbar">
-              <span className="brand">📷 Camtraption Desktop</span>
+              <span className="brand"><img src={logoUrl} alt="" />Camtraption Desktop</span>
               <Tabs<MainTab>
                 tabs={[{ id: 'devices', label: 'Devices' }, { id: 'graphs', label: 'Graphs' }]}
                 value={tab}

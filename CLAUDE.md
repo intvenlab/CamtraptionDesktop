@@ -37,6 +37,11 @@ Electron's stock `ffmpeg.dll` is quarantined by Defender here; `scripts/fix-ffmp
   - `stores.ts`: the JSON stores in userData, plus `TelemetryStore` (desktop only, feeds Graphs).
   - `index.ts`: IPC handlers.
 - `src/preload/index.ts` exposes `window.camtraption`.
+- Startup: `index.ts` shows `src/renderer/splash.html` (frameless, transparent; a second Vite input in
+  `electron.vite.config.ts`) until the main window's `ready-to-show`, at least 1.5 s.
+- Logo/icon come from the Android app's `res/drawable/loso_logo.png`: `build/icon.ico` + `build/icon.png` (installer and
+  exe icon) and `src/renderer/src/assets/logo.png` (app bar, empty-pane watermark). The splash artwork is
+  `img/CamtrationDesktopLogo2.png` (transparent), downscaled to `src/renderer/src/assets/splash.png`.
 - `src/renderer/src/` is React with no router. `App.tsx` holds the device map and the layout: an app bar with
   Devices | Graphs, and on Devices a sidebar (`screens/ScanList.tsx`) plus a detail pane. The pane is a stack (`nav.tsx`)
   whose root is the sidebar selection (Kit, device, Setup); Camera Logs and Log Viewer push on top. Lower layers stay

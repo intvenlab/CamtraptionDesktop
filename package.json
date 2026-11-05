@@ -28,7 +28,8 @@
       "node_modules/@stoprocent/bluetooth-hci-socket/**"
     ],
     "win": {
-      "target": "nsis"
+      "target": "nsis",
+      "icon": "build/icon.ico"
     }
   },
   "dependencies": {

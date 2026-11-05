@@ -73,10 +73,11 @@ export function Segmented<T extends string>(props: { options: { id: T; label: st
   )
 }
 
-export function EmptyState({ glyph, text }: { glyph: string; text: ReactNode }) {
+/** Centred placeholder: a faint image (the logo, as on the Android scan screen) or glyph, plus a line of text. */
+export function EmptyState({ glyph, image, text }: { glyph?: string; image?: string; text: ReactNode }) {
   return (
     <div className="watermark">
-      <div className="glyph">{glyph}</div>
+      {image ? <img className="mark" src={image} alt="" /> : <div className="glyph">{glyph}</div>}
       <div>{text}</div>
     </div>
   )
