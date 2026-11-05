@@ -21,7 +21,17 @@ export interface ChartLine {
   dashed?: boolean
 }
 
-export default function Chart(props: { lines: ChartLine[]; unit: string; height?: number; decimals?: number }) {
+/** Whole-number tick steps, for counts. */
+const INT_INCRS = [1, 2, 5, 10, 20, 50, 100, 200, 500, 1_000, 2_000, 5_000, 10_000]
+
+export default function Chart(props: {
+  lines: ChartLine[]
+  unit: string
+  height?: number
+  decimals?: number
+  /** Time axis span in ms; defaults to the data's own span. */
+  xRange?: [number, number]
+}) {
   const host = useRef<HTMLDivElement>(null)
   const plot = useRef<uPlot | null>(null)
   const height = props.height ?? 240
@@ -32,15 +42,21 @@ export default function Chart(props: { lines: ChartLine[]; unit: string; height?
     const { x, ys } = alignSeries(props.lines.map((l) => l.series))
     const bars = uPlot.paths.bars!({ size: [0.6, 24], align: 1 })
     const dec = props.decimals ?? 0
+    const xr = props.xRange
     const opts: uPlot.Options = {
       width: Math.max(200, el.clientWidth),
       height,
       cursor: { drag: { x: true, y: false }, points: { size: 6 } },
       legend: { live: true },
-      scales: { x: { time: true } },
+      scales: { x: { time: true, ...(xr ? { range: [xr[0] / 1000, xr[1] / 1000] as uPlot.Range.MinMax } : {}) } },
       axes: [
         { ...AXIS },
-        { ...AXIS, size: 56, values: (_u, vals) => vals.map((v) => (v == null ? '' : `${v.toFixed(dec)}`)) }
+        {
+          ...AXIS,
+          size: 56,
+          ...(dec === 0 ? { incrs: INT_INCRS } : {}),
+          values: (_u, vals) => vals.map((v) => (v == null ? '' : `${v.toFixed(dec)}`))
+        }
       ],
       series: [
         { label: 'Time' },
@@ -59,10 +75,15 @@ export default function Chart(props: { lines: ChartLine[]; unit: string; height?
     }
     const u = new uPlot(opts, [x, ...ys] as uPlot.AlignedData, el)
     plot.current = u
-    const ro = new ResizeObserver(() => u.setSize({ width: Math.max(200, el.clientWidth), height }))
+    // Resize on the next frame: resizing inside the observer callback triggers "ResizeObserver loop" warnings.
+    let frame = 0
+    const ro = new ResizeObserver(() => {
+      cancelAnimationFrame(frame)
+      frame = requestAnimationFrame(() => u.setSize({ width: Math.max(200, el.clientWidth), height }))
+    })
     ro.observe(el)
-    return () => { ro.disconnect(); u.destroy(); plot.current = null }
-  }, [props.lines, props.unit, props.decimals, height])
+    return () => { cancelAnimationFrame(frame); ro.disconnect(); u.destroy(); plot.current = null }
+  }, [props.lines, props.unit, props.decimals, height, props.xRange?.[0], props.xRange?.[1]])
 
   return <div ref={host} className="chart-host" />
 }

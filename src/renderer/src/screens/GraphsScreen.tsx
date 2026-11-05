@@ -21,13 +21,50 @@ type ScopeKey = string
 const RANGE_MS: Record<Range, number> = { '1h': 3_600_000, '24h': 86_400_000, '7d': 7 * 86_400_000, '30d': 30 * 86_400_000, all: Infinity }
 const LIVE_REFRESH_MS = 30_000
 
-const CHARTS: { metric: Metric; title: string; unit: string; decimals: number; help: string }[] = [
-  { metric: 'voltage', title: 'Battery voltage', unit: 'V', decimals: 2, help: 'Solid = external pack, dashed = internal cell' },
-  { metric: 'percent', title: 'Battery level', unit: '%', decimals: 0, help: 'Solid = external pack, dashed = internal cell' },
-  { metric: 'rssi', title: 'Signal strength', unit: 'dBm', decimals: 0, help: 'As heard by this PC (live) or by the Hub (logs)' },
-  { metric: 'shutters', title: 'Shutters per hour', unit: '', decimals: 0, help: 'Shutter count increases, plus triggers in the Hub camera log' },
-  { metric: 'hubHeard', title: 'Devices heard by Hub', unit: '', decimals: 0, help: 'Distinct devices in the Hub scan log per 10 minutes (logs only)' }
+type BatteryUnit = 'voltage' | 'percent'
+type Columns = 1 | 2 | 3
+
+/**
+ * One chart. The two battery charts (part = "ext" / "int") switch between voltage and level with a
+ * V | % toggle; the battery metrics produce both parts and the chart keeps its own.
+ */
+interface ChartDef { id: string; metric: Metric; part?: 'ext' | 'int'; title: string; unit: string; decimals: number; help: string }
+
+const CHARTS: ChartDef[] = [
+  { id: 'ext', metric: 'voltage', part: 'ext', title: 'External battery', unit: 'V', decimals: 2, help: 'Battery pack' },
+  { id: 'int', metric: 'voltage', part: 'int', title: 'Internal battery', unit: 'V', decimals: 2, help: 'Internal cell' },
+  { id: 'rssi', metric: 'rssi', title: 'Signal strength', unit: 'dBm', decimals: 0, help: 'As heard by this PC (live) or by the Hub (logs)' },
+  { id: 'shutters', metric: 'shutters', title: 'Shutters per hour', unit: '', decimals: 0, help: 'Shutter count increases, plus triggers in the Hub camera log' },
+  { id: 'hubHeard', metric: 'hubHeard', title: 'Devices heard by Hub', unit: '', decimals: 0, help: 'Distinct devices in the Hub scan log per 10 minutes (logs only)' }
 ]
+
+/** A battery chart showing level instead of voltage. */
+const asPercent = (c: ChartDef): ChartDef => ({ ...c, metric: 'percent', unit: '%', decimals: 0 })
+
+/** Chart height for the column count; one per row gets more room. */
+const CHART_HEIGHT: Record<Columns, number> = { 1: 360, 2: 240, 3: 200 }
+
+const COLUMNS_KEY = 'graphColumns'
+function savedColumns(): Columns {
+  try {
+    const v = Number(localStorage.getItem(COLUMNS_KEY))
+    return v === 1 || v === 3 ? v : 2
+  } catch {
+    return 2
+  }
+}
+
+/** Expanded chart height: most of the window below the header and filter bar. */
+function useExpandedHeight(): number {
+  const calc = () => Math.max(260, window.innerHeight - 330)
+  const [h, setH] = useState(calc)
+  useEffect(() => {
+    const onResize = () => setH(calc())
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
+  return h
+}
 
 interface HubLogs { scan: HubLogRecord[]; camera: HubLogRecord[]; files: number }
 
@@ -39,7 +76,7 @@ export default function GraphsScreen(props: {
   const [source, setSource] = useState<Source>('both')
   const [range, setRange] = useState<Range>('24h')
   const [scope, setScope] = useState<Set<ScopeKey>>(new Set())
-  const [metrics, setMetrics] = useState<Set<Metric>>(new Set(CHARTS.map((c) => c.metric)))
+  const [metrics, setMetrics] = useState<Set<string>>(new Set(CHARTS.map((c) => c.id)))
   const [telemetry, setTelemetry] = useState<Record<string, TelemetrySample[]>>({})
   const [logs, setLogs] = useState<Record<string, HubLogs>>({})
   const [loadingLogs, setLoadingLogs] = useState(false)
@@ -48,6 +85,22 @@ export default function GraphsScreen(props: {
   const [confirmSync, setConfirmSync] = useState(false)
   const [sync, setSync] = useState<{ hubs: BleDevice[]; states: Record<string, HubSyncState>; running: boolean } | null>(null)
   const cancelSync = useRef(false)
+  const [batteryUnit, setBatteryUnit] = useState<Record<string, BatteryUnit>>({ ext: 'voltage', int: 'voltage' })
+  const [columns, setColumns] = useState<Columns>(savedColumns)
+  const [expanded, setExpanded] = useState<string | null>(null)
+  const expandedHeight = useExpandedHeight()
+
+  useEffect(() => {
+    try { localStorage.setItem(COLUMNS_KEY, String(columns)) } catch { /* per-viewer convenience only */ }
+  }, [columns])
+
+  // Esc leaves the expanded chart (Graphs isn't on the Devices pane's Back stack).
+  useEffect(() => {
+    if (!expanded) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setExpanded(null) }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [expanded])
 
   const configured = useMemo(() => props.devices.filter((d) => d.isConfigured), [props.devices])
   const kits = useMemo(() => [...new Set(configured.map((d) => d.groupId).filter((g) => g !== 0))].sort((a, b) => a - b), [configured])
@@ -136,7 +189,8 @@ export default function GraphsScreen(props: {
     return (addr: string) => SERIES_COLORS[Math.max(0, sorted.indexOf(addr)) % SERIES_COLORS.length]
   }, [configured, logs])
 
-  const charts = useMemo(() => CHARTS.filter((c) => metrics.has(c.metric)).map((c) => {
+  const charts = useMemo(() => CHARTS.filter((c) => (expanded ? c.id === expanded : metrics.has(c.id))).map((def) => {
+    const c = def.part && batteryUnit[def.id] === 'percent' ? asPercent(def) : def
     const series: Series[] = []
     if (wantLive) series.push(...telemetrySeries(telemetry, c.metric, from, now))
     if (wantLog) {
@@ -146,18 +200,18 @@ export default function GraphsScreen(props: {
       }
     }
     // Hub-level series ("heard", camera triggers) are keyed by the Hub's own address, so this covers them too.
-    const visible = allowed == null ? series : series.filter((s) => allowed.has(s.address))
+    const inScope = allowed == null ? series : series.filter((s) => allowed.has(s.address))
+    const visible = c.part ? inScope.filter((s) => s.part === c.part) : inScope
     const lines: ChartLine[] = visible.map((s) => {
       let label = name(s.address)
       if (s.key.endsWith('|heard')) label = `${label} heard`
       else if (s.key.endsWith('|trig')) label = `${label} triggers`
-      else if (s.part !== '') label = `${label} ${s.part}`
       if (source === 'both') label += s.source === 'live' ? ' · live' : ' · log'
-      return { series: s, label, color: colorOf(s.address), dashed: s.part === 'int' || (source === 'both' && s.source === 'log' && !s.bars) }
+      return { series: s, label, color: colorOf(s.address), dashed: source === 'both' && s.source === 'log' && !s.bars }
     })
     return { ...c, lines }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }), [metrics, telemetry, logs, from, now, allowed, source, colorOf, wantLive, wantLog])
+  }), [metrics, expanded, batteryUnit, telemetry, logs, from, now, allowed, source, colorOf, wantLive, wantLog])
 
   // Hubs to visit: configured Hubs currently advertising.
   const hubsInRange = props.devices.filter((d) => d.isConfigured && d.isConnected && d.hubNearbyCount >= 0)
@@ -213,12 +267,20 @@ export default function GraphsScreen(props: {
           name={name}
         />
         <div className="group">
+          <span className="label-m">Layout</span>
+          <Segmented<string>
+            value={String(columns)}
+            onChange={(v) => { setColumns(Number(v) as Columns); setExpanded(null) }}
+            options={[{ id: '1', label: '1 column' }, { id: '2', label: '2' }, { id: '3', label: '3' }]}
+          />
+        </div>
+        <div className="group">
           <span className="label-m">Charts</span>
           {CHARTS.map((c) => (
             <button
-              key={c.metric}
-              className={'chip' + (metrics.has(c.metric) ? ' selected' : '')}
-              onClick={() => setMetrics((m) => { const n = new Set(m); if (n.has(c.metric)) n.delete(c.metric); else n.add(c.metric); return n })}
+              key={c.id}
+              className={'chip' + (metrics.has(c.id) ? ' selected' : '')}
+              onClick={() => setMetrics((m) => { const n = new Set(m); if (n.has(c.id)) n.delete(c.id); else n.add(c.id); return n })}
             >
               {c.title}
             </button>
@@ -261,22 +323,43 @@ export default function GraphsScreen(props: {
         </div>
       )}
 
-      <div className="grid-2">
-        {charts.map((c) => (
-          <div key={c.metric} className="card chart-card">
-            <div className="row between" style={{ marginBottom: 4 }}>
-              <span className="title-m">{c.title}</span>
-              <span className="label-s muted">{c.help}</span>
-            </div>
-            {c.lines.length === 0 ? (
-              <div className="empty" style={{ minHeight: 200 }}>
-                {c.metric === 'hubHeard' && !wantLog ? 'Hub logs only' : 'No data for this range'}
+      <div className="chart-grid" style={{ gridTemplateColumns: `repeat(${expanded ? 1 : columns}, minmax(0, 1fr))` }}>
+        {charts.map((c) => {
+          const height = expanded ? expandedHeight : CHART_HEIGHT[columns]
+          return (
+            <div key={c.id} className="card chart-card">
+              <div className="row between" style={{ marginBottom: 4 }}>
+                <div className="row">
+                  <span className="title-m">{c.title}</span>
+                  {c.part && (
+                    <Segmented<BatteryUnit>
+                      value={batteryUnit[c.id] ?? 'voltage'}
+                      onChange={(u) => setBatteryUnit((b) => ({ ...b, [c.id]: u }))}
+                      options={[{ id: 'voltage', label: 'V' }, { id: 'percent', label: '%' }]}
+                    />
+                  )}
+                </div>
+                <div className="row">
+                  <span className="label-s muted">{c.help}</span>
+                  <button
+                    className="icon"
+                    title={expanded ? 'Back to all charts (Esc)' : 'Show this chart full page'}
+                    onClick={() => setExpanded(expanded ? null : c.id)}
+                  >
+                    {expanded ? '✕' : '⛶'}
+                  </button>
+                </div>
               </div>
-            ) : (
-              <Chart lines={c.lines} unit={c.unit} decimals={c.decimals} />
-            )}
-          </div>
-        ))}
+              {c.lines.length === 0 ? (
+                <div className="empty" style={{ minHeight: height }}>
+                  {c.metric === 'hubHeard' && !wantLog ? 'Hub logs only' : 'No data for this range'}
+                </div>
+              ) : (
+                <Chart lines={c.lines} unit={c.unit} decimals={c.decimals} height={height} xRange={range === 'all' ? undefined : [from, now]} />
+              )}
+            </div>
+          )
+        })}
       </div>
     </Screen>
   )
