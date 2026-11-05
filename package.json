@@ -28,8 +28,17 @@
       "node_modules/@stoprocent/bluetooth-hci-socket/**"
     ],
     "win": {
-      "target": "nsis",
+      "target": [
+        "nsis",
+        "portable"
+      ],
       "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "artifactName": "CamtraptionDesktop-Setup-${version}.exe"
+    },
+    "portable": {
+      "artifactName": "CamtraptionDesktop-${version}-portable.exe"
     }
   },
   "dependencies": {
