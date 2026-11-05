@@ -12,11 +12,14 @@
     "start": "electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "test": "vitest run",
-    "dist": "electron-vite build && electron-builder --win"
+    "postinstall": "node node_modules/electron/install.js && node scripts/fix-ffmpeg.mjs",
+    "fix-ffmpeg": "node scripts/fix-ffmpeg.mjs",
+    "dist": "node scripts/fix-ffmpeg.mjs && electron-vite build && electron-builder --win"
   },
   "build": {
     "appId": "com.ivlabs.camtraptiondesktop",
     "productName": "Camtraption Desktop",
+    "electronDist": "node_modules/electron/dist",
     "files": [
       "out/**/*"
     ],
@@ -42,6 +45,7 @@
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "typescript": "^7.0.2",
+    "uplot": "^1.6.32",
     "vite": "^8.3.6",
     "vitest": "^5.1.0"
   }

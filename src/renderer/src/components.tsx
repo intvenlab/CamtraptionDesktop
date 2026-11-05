@@ -15,12 +15,16 @@ export function Screen(props: {
   subtitle?: ReactNode
   onBack?: () => void
   actions?: ReactNode
+  /** Rendered under the header (e.g. a Tabs bar), outside the scrolling content. */
+  tabs?: ReactNode
+  /** Form-like screens read better at a fixed width. */
+  narrow?: boolean
   children: ReactNode
 }) {
   useBackHandler(props.onBack)
   return (
     <div className="app">
-      <div className="topbar">
+      <div className={'topbar' + (props.tabs ? ' with-tabs' : '')}>
         {props.onBack && (
           <button className="icon" title="Back (Esc)" onClick={props.onBack}>←</button>
         )}
@@ -30,9 +34,50 @@ export function Screen(props: {
         </div>
         {props.actions}
       </div>
+      {props.tabs}
       <div className="content">
-        <div className="content-inner">{props.children}</div>
+        <div className={'content-inner' + (props.narrow ? ' narrow' : '')}>{props.children}</div>
       </div>
+    </div>
+  )
+}
+
+export interface TabDef<T extends string> { id: T; label: string; dot?: boolean }
+
+export function Tabs<T extends string>(props: { tabs: TabDef<T>[]; value: T; onChange: (t: T) => void; className?: string }) {
+  return (
+    <div className={'tabs ' + (props.className ?? '')} role="tablist">
+      {props.tabs.map((t) => (
+        <button
+          key={t.id}
+          role="tab"
+          aria-selected={t.id === props.value}
+          className={'tab' + (t.id === props.value ? ' active' : '')}
+          onClick={() => props.onChange(t.id)}
+        >
+          {t.label}
+          {t.dot && <span className="tab-dot" />}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+export function Segmented<T extends string>(props: { options: { id: T; label: string }[]; value: T; onChange: (v: T) => void }) {
+  return (
+    <div className="segmented">
+      {props.options.map((o) => (
+        <button key={o.id} className={o.id === props.value ? 'selected' : ''} onClick={() => props.onChange(o.id)}>{o.label}</button>
+      ))}
+    </div>
+  )
+}
+
+export function EmptyState({ glyph, text }: { glyph: string; text: ReactNode }) {
+  return (
+    <div className="watermark">
+      <div className="glyph">{glyph}</div>
+      <div>{text}</div>
     </div>
   )
 }
@@ -122,20 +167,21 @@ export function Progress({ value, color }: { value?: number; color?: string }) {
   )
 }
 
+/** Blue while healthy; amber and red are kept as status colours. */
 export function batteryColor(percent: number): string {
   if (percent > 50) return 'var(--primary)'
-  if (percent > 20) return 'var(--tertiary)'
+  if (percent > 20) return 'var(--warn)'
   return 'var(--error)'
 }
 
 export function GattStatusBanner({ status }: { status: GattStatus }) {
   const [text, color] = {
     IDLE: ['Not connected', 'var(--on-variant)'],
-    CONNECTING: ['Connecting…', 'var(--tertiary)'],
-    READY: ['Connected', 'var(--primary)'],
+    CONNECTING: ['Connecting…', 'var(--accent)'],
+    READY: ['Connected', 'var(--green)'],
     ERROR: [status.errorMessage ?? 'Connection error', 'var(--error)']
   }[status.state]
-  return <div className="label-m" style={{ color }}>{text}</div>
+  return <div className="label-m" style={{ color }}>● {text}</div>
 }
 
 export function StatItem({ label, value, color }: { label: string; value: string; color?: string }) {

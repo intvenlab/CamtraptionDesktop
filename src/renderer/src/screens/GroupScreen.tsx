@@ -31,7 +31,6 @@ export default function GroupScreen(props: {
   onGroupNameChange: (groupId: number, name: string) => void
   onOpenDevice: (d: BleDevice) => void
   onForgetDevice: (d: BleDevice) => void
-  onBack: () => void
 }) {
   const devices = props.allDevices.filter((d) => d.groupId === props.groupId).sort(byKitOrder)
   const [nameInput, setNameInput] = useState(props.groupName ?? '')
@@ -50,11 +49,15 @@ export default function GroupScreen(props: {
   }
 
   return (
-    <Screen title={nameInput.trim() !== '' ? nameInput : `Kit ${props.groupId}`} onBack={props.onBack}>
+    <Screen
+      title={nameInput.trim() !== '' ? `Kit ${props.groupId} · ${nameInput}` : `Kit ${props.groupId}`}
+      subtitle={`${devices.length} device${devices.length === 1 ? '' : 's'} · ${devices.filter((d) => d.isConnected).length} in range`}
+    >
       {devices.length === 0 ? (
         <div className="empty">No devices in this group</div>
       ) : (
         <>
+          <div className="card col gap12">
           <TextField
             label="Kit Description - (Optional)"
             placeholder={`Kit ${props.groupId}`}
@@ -63,7 +66,7 @@ export default function GroupScreen(props: {
             onChange={(v) => { setNameInput(v); props.onGroupNameChange(props.groupId, v) }}
           />
           {camera && (
-            <div className="row" style={{ padding: '0 4px' }}>
+            <div className="row">
               <span>📷</span>
               <span className="muted">Shutter Count:</span>
               <span className="title-m semibold grow">{formatThousands(camera.shutterCount)}</span>
@@ -73,9 +76,12 @@ export default function GroupScreen(props: {
             </div>
           )}
           {camera && <StatusText text={resetStatus} ok={!!resetStatus?.startsWith('Shutter')} />}
-          {devices.map((d) => (
-            <IndividualDeviceCard key={d.address} device={d} onClick={() => props.onOpenDevice(d)} onForget={() => props.onForgetDevice(d)} />
-          ))}
+          </div>
+          <div className="grid-2">
+            {devices.map((d) => (
+              <IndividualDeviceCard key={d.address} device={d} onClick={() => props.onOpenDevice(d)} onForget={() => props.onForgetDevice(d)} />
+            ))}
+          </div>
         </>
       )}
       {confirm && (

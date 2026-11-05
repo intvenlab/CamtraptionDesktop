@@ -2,10 +2,10 @@
 // the Android stores (KnownDeviceStore.kt, DeviceHistoryStore.kt, GroupNameStore.kt,
 // CameraLogCatalogStore.kt) so data can be compared or copied between the two apps.
 
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import {
-  BleDevice, CachedHubLog, DeviceHistoryEntry, chemistryOf, deviceTypeOf, makeDevice
+  BleDevice, CachedHubLog, DeviceHistoryEntry, TelemetrySample, chemistryOf, deviceTypeOf, makeDevice
 } from '../shared/types'
 
 type Json = Record<string, any>
@@ -223,5 +223,102 @@ export class CameraLogCatalogStore {
   remove(e: CachedHubLog) {
     writeFileSync(this.file, JSON.stringify(readArray(this.file).filter((o) => !this.sameKey(o, e))))
     rmSync(e.localCachePath, { force: true })
+  }
+}
+
+// ─── Live telemetry (desktop only) ─────────────────────────────────────────
+
+/**
+ * Readings from live advertisements, kept for the Graphs tab: one JSONL file per device under
+ * telemetry/. A device is sampled at most every 30 s, or at once when its shutter count or a battery
+ * percentage changes. Lines are buffered and appended every 5 s; anything older than 30 days is
+ * pruned at startup.
+ */
+export class TelemetryStore {
+  static readonly MIN_INTERVAL_MS = 30_000
+  static readonly KEEP_MS = 30 * 24 * 3_600_000
+  private readonly dir: string
+  private readonly last = new Map<string, TelemetrySample>()
+  private readonly pending = new Map<string, string[]>()
+  private flushTimer: NodeJS.Timeout | null = null
+
+  constructor(dir: string) {
+    this.dir = join(dir, 'telemetry')
+    mkdirSync(this.dir, { recursive: true })
+    this.prune()
+  }
+
+  private fileFor(address: string) {
+    return join(this.dir, `${safeAddr(address)}.jsonl`)
+  }
+
+  record(d: BleDevice) {
+    if (!d.isConfigured || !d.isConnected) return
+    const s: TelemetrySample = {
+      t: d.lastSeen, mv: d.voltageMillivolts, pct: d.batteryPercent, extMv: d.extVoltageMillivolts,
+      extPct: d.extBatteryPercent, rssi: d.rssi, shutter: d.shutterCount
+    }
+    const prev = this.last.get(d.address)
+    if (prev) {
+      if (s.t <= prev.t) return
+      const changed = s.shutter !== prev.shutter || s.pct !== prev.pct || s.extPct !== prev.extPct
+      if (!changed && s.t - prev.t < TelemetryStore.MIN_INTERVAL_MS) return
+    }
+    this.last.set(d.address, s)
+    const lines = this.pending.get(d.address) ?? []
+    lines.push(JSON.stringify(s))
+    this.pending.set(d.address, lines)
+    if (!this.flushTimer) this.flushTimer = setTimeout(() => this.flush(), 5_000)
+  }
+
+  flush() {
+    if (this.flushTimer) clearTimeout(this.flushTimer)
+    this.flushTimer = null
+    for (const [address, lines] of this.pending) {
+      try {
+        appendFileSync(this.fileFor(address), lines.join('\n') + '\n')
+      } catch (e) {
+        console.warn('telemetry write failed', e)
+      }
+    }
+    this.pending.clear()
+  }
+
+  load(addresses: string[], fromMs: number, toMs: number): Record<string, TelemetrySample[]> {
+    this.flush()
+    const out: Record<string, TelemetrySample[]> = {}
+    for (const address of addresses) {
+      const rows = this.readFile(this.fileFor(address)).filter((s) => s.t >= fromMs && s.t <= toMs)
+      if (rows.length > 0) out[address] = rows
+    }
+    return out
+  }
+
+  private readFile(file: string): TelemetrySample[] {
+    if (!existsSync(file)) return []
+    const out: TelemetrySample[] = []
+    for (const line of readFileSync(file, 'utf8').split('\n')) {
+      if (line.trim() === '') continue
+      try {
+        const o = JSON.parse(line)
+        if (typeof o?.t === 'number') out.push(o as TelemetrySample)
+      } catch {
+        /* skip a torn line */
+      }
+    }
+    return out
+  }
+
+  private prune() {
+    const cutoff = Date.now() - TelemetryStore.KEEP_MS
+    for (const name of readdirSync(this.dir)) {
+      if (!name.endsWith('.jsonl')) continue
+      const file = join(this.dir, name)
+      const rows = this.readFile(file)
+      const kept = rows.filter((s) => s.t >= cutoff)
+      if (kept.length === rows.length) continue
+      if (kept.length === 0) rmSync(file, { force: true })
+      else writeFileSync(file, kept.map((s) => JSON.stringify(s)).join('\n') + '\n')
+    }
   }
 }

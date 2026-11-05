@@ -26,6 +26,7 @@ const api: CamtraptionApi = {
   loadCatalog: invoke('loadCatalog') as CamtraptionApi['loadCatalog'],
   removeCached: invoke('removeCached') as CamtraptionApi['removeCached'],
   readLogTexts: invoke('readLogTexts') as CamtraptionApi['readLogTexts'],
+  loadTelemetry: invoke('loadTelemetry') as CamtraptionApi['loadTelemetry'],
 
   onGattStatus: (cb) => subscribe('gattStatus', cb),
   getGattStatus: invoke('getGattStatus') as CamtraptionApi['getGattStatus'],

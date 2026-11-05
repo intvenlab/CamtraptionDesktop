@@ -147,3 +147,14 @@ export interface GattStatus {
 }
 
 export type AdapterState = 'poweredOn' | 'poweredOff' | 'unauthorized' | 'unsupported' | 'unknown' | 'resetting'
+
+/** One live reading recorded by the desktop app for the Graphs tab (TelemetryStore). */
+export interface TelemetrySample {
+  t: number         // ms
+  mv: number        // internal battery
+  pct: number
+  extMv: number
+  extPct: number    // -1 = no external battery
+  rssi: number
+  shutter: number
+}

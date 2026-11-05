@@ -1,6 +1,6 @@
 // First-time configuration of an unconfigured device. Port of SetupScreen.kt.
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { volts } from '../../../shared/scanList'
 import {
   BatteryChemistry, BleDevice, CHEMISTRIES, DEVICE_TYPES, DeviceType, chemistryName, deviceTypeName
@@ -22,15 +22,24 @@ export default function SetupScreen(props: { device: BleDevice; onFinish: () => 
   const [status, setStatus] = useState<string | null>(null)
   const d = props.device
 
-  const leave = () => { void api.gattDisconnect(); props.onFinish() }
+  // Setup is configuration, so it holds a GATT connection for as long as it's showing.
+  useEffect(() => {
+    void api.gattConnect(d.address)
+    return () => { void api.gattDisconnect() }
+  }, [d.address])
+
+  const leave = () => props.onFinish()
 
   return (
-    <Screen title="Setup Device" onBack={leave}>
-      <div className="col">
-        <span className="body-s muted mono">{d.address}</span>
+    <Screen
+      title="Setup Device"
+      subtitle={d.address}
+      narrow
+      actions={<>
         <GattStatusBanner status={gatt} />
-      </div>
-
+        {gatt.state === 'ERROR' && <button className="outlined small" onClick={() => void api.gattConnect(d.address)}>Retry</button>}
+      </>}
+    >
       <div className="card col gap8">
         <div className="title-m">Battery</div>
         <div className="row between">
@@ -52,7 +61,7 @@ export default function SetupScreen(props: { device: BleDevice; onFinish: () => 
 
       <StatusText text={status} ok={false} />
       <button
-        className="full"
+        style={{ alignSelf: 'flex-start' }}
         disabled={name.trim() === ''}
         onClick={async () => {
           if (gatt.state === 'READY' && (await writeDeviceSettings(name, type, chem, cells, kit))) leave()

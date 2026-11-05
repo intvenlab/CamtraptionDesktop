@@ -1,5 +1,7 @@
-// Device settings. Port of DeviceSettingsScreen (DeviceScreen.kt): Camera Logic, Feeder, device
-// settings, calibration, Hub nearby list, factory reset and Send Log.
+// Device settings. Port of DeviceSettingsScreen (DeviceScreen.kt), split into the device panel's
+// tabs: Settings (name/type/chemistry/cells/Kit, info, Send Log, factory reset), Camera Logic,
+// Feeder, Calibration and Hub (nearby list). useDeviceConfig holds the state they share, so the
+// device is read once per connection rather than once per tab.
 
 import { useEffect, useRef, useState } from 'react'
 import {
@@ -16,7 +18,7 @@ import {
 import { api, sleep } from '../api'
 import { useGattStatus, useToast } from '../context'
 import {
-  CellCountSelect, Divider, GattStatusBanner, HoldButton, KitSelect, NearbyDeviceRow, NumberField, Screen, Select,
+  CellCountSelect, ConfirmDialog, Divider, HoldButton, KitSelect, NearbyDeviceRow, NumberField, Select,
   StatItem, StatusText, SwitchCard, TextField
 } from '../components'
 
@@ -44,17 +46,11 @@ async function readNearbyDevices(): Promise<NearbyDevice[] | null> {
   return all
 }
 
-export default function SettingsScreen(props: {
-  device: BleDevice
-  nameForAddress: (addr: string) => string | null
-  onBack: () => void
-  onFactoryReset: () => void
-  onOpenDeviceHistory: (addr: string) => void
-  onOpenCameraLogs: () => void
-}) {
-  const d = props.device
+export type DeviceConfig = ReturnType<typeof useDeviceConfig>
+
+/** Form state for every settings tab, read from the device each time GATT becomes READY. */
+export function useDeviceConfig(d: BleDevice) {
   const gatt = useGattStatus()
-  const toast = useToast()
   const ready = gatt.state === 'READY'
   const isCamera = d.deviceType === DeviceType.CAMERA
   const isFeeder = d.deviceType === DeviceType.FEEDER
@@ -158,13 +154,35 @@ export default function SettingsScreen(props: {
     void api.gattWrite(GattUuids.FEEDER_PUMP_OVERRIDE, new Uint8Array([0x00]))
   }
 
+  return {
+    device: d, ready, isCamera, isFeeder, isCameraHub,
+    name, setName, type, setType, chem, setChem, cells, setCells, kit, setKit, saveStatus, setSaveStatus,
+    cal, setCal, calStatus, setCalStatus, intCal, setIntCal, intCalStatus, setIntCalStatus,
+    cam, camLoaded, camStatus, setCamStatus, setCamField,
+    feeder, feederLoaded, feederStatus, setFeederStatus, setFeederField,
+    saveWithAck, startPump, stopPump
+  }
+}
+
+/** Shown on BLE tabs until the device is connected. */
+function NotReady({ c }: { c: DeviceConfig }) {
+  if (c.ready) return null
+  return <div className="card body-s muted">Values are read from the device once it's connected.</div>
+}
+
+export function SettingsTab(props: { c: DeviceConfig; onFactoryReset: () => void }) {
+  const { c } = props
+  const d = c.device
+  const toast = useToast()
+  const [confirmReset, setConfirmReset] = useState(false)
+
   const sendLog = async () => {
     const file = await api.historyFilePath(d.address)
     if (!file) {
       toast('No log for this device yet')
       return
     }
-    const label = `${kit !== 0 ? `Kit ${kit} - ` : ''}${d.name ?? d.address}`
+    const label = `${c.kit !== 0 ? `Kit ${c.kit} - ` : ''}${d.name ?? d.address}`
     const saved = await api.saveCopies([file], `Device Log - ${label.replace(/[\\/:*?"<>|]/g, '_')}.json`)
     if (saved) {
       toast(`Saved ${saved}`)
@@ -174,154 +192,228 @@ export default function SettingsScreen(props: {
   }
 
   return (
-    <Screen title="Settings" onBack={props.onBack}>
-      <GattStatusBanner status={gatt} />
+    <div className="grid-2">
+      <div className="stack">
+        <NotReady c={c} />
+        <div className="card col gap12">
+          <div className="title-m">Device Settings</div>
+          <TextField label="Device Name" value={c.name} maxLength={20} onChange={c.setName} />
+          <div className="fields-2">
+            <Select label="Device Type" value={c.type} options={DEVICE_TYPES} display={deviceTypeName} onChange={c.setType} />
+            <Select label="Battery Chemistry" value={c.chem} options={CHEMISTRIES} display={chemistryName} onChange={c.setChem} />
+            <CellCountSelect value={c.cells} onChange={c.setCells} />
+            <KitSelect value={c.kit} onChange={c.setKit} />
+          </div>
+          <div className="row">
+            <button
+              disabled={!c.ready}
+              onClick={async () => {
+                const ok = c.ready && (await writeDeviceSettings(c.name, c.type, c.chem, c.cells, c.kit))
+                c.setSaveStatus(ok ? 'Saved successfully' : 'Save failed – not connected')
+              }}
+            >
+              Save
+            </button>
+            <StatusText text={c.saveStatus} ok={!!c.saveStatus?.startsWith('Saved')} />
+          </div>
+        </div>
+      </div>
 
-      {/* Debug builds show it for every Camera so the mock-server path is reachable without Hub hardware. */}
-      {isCamera && (isCameraHub || api.isDebug) && (
-        <button className="full" disabled={!(ready || api.isDebug)} onClick={props.onOpenCameraLogs}>Camera Logs (SD card)</button>
+      <div className="stack">
+        <div className="card col gap12">
+          <div className="title-m">Device Info</div>
+          <div className="row evenly">
+            <StatItem label="Chemistry" value={chemistryName(d.batteryChemistry)} />
+            <StatItem label="Cells" value={`${d.cellCount}`} />
+            <StatItem label="Signal" value={`${d.rssi} dBm`} />
+          </div>
+          <Divider />
+          <div className="row evenly">
+            <StatItem label="Internal Battery" value={`${d.batteryPercent}%`} />
+            <StatItem label="Internal Voltage" value={`${volts(d.voltageMillivolts)} V`} />
+          </div>
+          <Divider />
+          <div className="row evenly"><StatItem label="MAC Address" value={d.address} /></div>
+          {d.firmwareBuild !== '' && (
+            <>
+              <Divider />
+              <div className="row evenly"><StatItem label="Built" value={d.firmwareBuild} /></div>
+            </>
+          )}
+        </div>
+        <div className="card row between">
+          <div className="col" style={{ gap: 0 }}>
+            <span className="semibold">Device log</span>
+            <span className="body-s muted">Save this device's event history and email it.</span>
+          </div>
+          <button className="outlined" onClick={() => void sendLog()}>Send Log</button>
+        </div>
+        <div className="card danger-zone row between">
+          <div className="col" style={{ gap: 0 }}>
+            <span className="semibold error">Factory Reset</span>
+            <span className="body-s muted">Returns the device to unconfigured and disconnects.</span>
+          </div>
+          <button className="outlined danger" disabled={!c.ready} onClick={() => setConfirmReset(true)}>Factory Reset</button>
+        </div>
+      </div>
+
+      {confirmReset && (
+        <ConfirmDialog
+          title="Factory reset this device?"
+          text={`${d.name ?? d.address} goes back to unconfigured and disconnects.`}
+          confirmLabel="Reset"
+          onConfirm={async () => {
+            setConfirmReset(false)
+            await api.gattWrite(GattUuids.FACTORY_RESET, new Uint8Array([0x01]))
+            await api.gattDisconnect()
+            props.onFactoryReset()
+          }}
+          onDismiss={() => setConfirmReset(false)}
+        />
       )}
+    </div>
+  )
+}
 
-      {isCamera && isCameraHub && (
-        <NearbyDevicesCard nameForAddress={props.nameForAddress} onOpen={props.onOpenDeviceHistory} />
-      )}
-
-      {isCamera && (
-        <>
-          <SwitchCard label="Logic Bypass" checked={!cam.enabled} onChange={(v) => setCamField('enabled', !v)} />
+export function CameraLogicTab({ c }: { c: DeviceConfig }) {
+  const cam = c.cam
+  const set = c.setCamField
+  return (
+    <div className="stack">
+      <NotReady c={c} />
+      {c.ready && !c.camLoaded && !c.camStatus && <div className="body-s muted">Reading Camera Logic…</div>}
+      <div className="grid-2">
+        <SwitchCard label="Logic Bypass" checked={!cam.enabled} onChange={(v) => set('enabled', !v)} />
+        <SwitchCard label="Power Save Idle Mode" checked={cam.powerSaveIdleMode} onChange={(v) => set('powerSaveIdleMode', v)} />
+        <div className="stack">
           <div className="card col gap12">
             <div className="title-m">Sequence</div>
-            <NumberField label="Frame Count (0–64)" value={cam.frameCount} onChange={(v) => setCamField('frameCount', v)} maxDigits={2} />
-            <NumberField label="Max Sequence Count (0–64)" value={cam.maxSequenceCount} onChange={(v) => setCamField('maxSequenceCount', v)} maxDigits={2} />
-          </div>
-          <div className="card col gap12">
-            <div className="title-m">Timing</div>
-            <NumberField label="Wake HP Hold (ms)" value={cam.wakeHalfPressHoldSec} onChange={(v) => setCamField('wakeHalfPressHoldSec', v)} maxDigits={5} />
-            <NumberField label="Min HP Before Shutter (ms)" value={cam.minHalfPressBeforeShutter} onChange={(v) => setCamField('minHalfPressBeforeShutter', v)} maxDigits={5} />
-            <NumberField label="Shutter Pulse Duration (ms)" value={cam.shutterPulseDuration} onChange={(v) => setCamField('shutterPulseDuration', v)} maxDigits={5} />
-            <NumberField label="Frame Spacing (ms)" value={cam.startFrameSpacingTicks} onChange={(v) => setCamField('startFrameSpacingTicks', v)} maxDigits={5} />
-            <NumberField label="Post-Shutter HP Hold (ms)" value={cam.postShutterHpHoldTenths} onChange={(v) => setCamField('postShutterHpHoldTenths', v)} maxDigits={5} />
-            <NumberField label="HP Debounce (ms)" value={cam.hpDebounceMs} onChange={(v) => setCamField('hpDebounceMs', v)} />
-            <NumberField label="FP Debounce (ms)" value={cam.fpDebounceMs} onChange={(v) => setCamField('fpDebounceMs', v)} />
-            <NumberField label="FP Ignore Gap (ms)" value={cam.fullPressIgnoreGapTenths} onChange={(v) => setCamField('fullPressIgnoreGapTenths', v)} maxDigits={5} />
+            <NumberField label="Frame Count (0–64)" value={cam.frameCount} onChange={(v) => set('frameCount', v)} maxDigits={2} />
+            <NumberField label="Max Sequence Count (0–64)" value={cam.maxSequenceCount} onChange={(v) => set('maxSequenceCount', v)} maxDigits={2} />
           </div>
           <div className="card col gap12">
             <div className="title-m">Policies</div>
-            <Policy label="Wake Hold Refresh" options={['Extend', 'Restart', 'Ignore While Active']} value={cam.wakeHoldRefreshPolicy} onChange={(v) => setCamField('wakeHoldRefreshPolicy', v)} />
-            <Policy label="FP Without Prior HP" options={['Assert HP Then Wait', 'Ignore FP']} value={cam.fullPressWithoutHpPolicy} onChange={(v) => setCamField('fullPressWithoutHpPolicy', v)} />
-            <Policy label="FP After Max Sequences" options={['Ignore Until Activity End']} value={cam.fpAfterMaxSeqCountPolicy} onChange={(v) => setCamField('fpAfterMaxSeqCountPolicy', v)} />
+            <Policy label="Wake Hold Refresh" options={['Extend', 'Restart', 'Ignore While Active']} value={cam.wakeHoldRefreshPolicy} onChange={(v) => set('wakeHoldRefreshPolicy', v)} />
+            <Policy label="FP Without Prior HP" options={['Assert HP Then Wait', 'Ignore FP']} value={cam.fullPressWithoutHpPolicy} onChange={(v) => set('fullPressWithoutHpPolicy', v)} />
+            <Policy label="FP After Max Sequences" options={['Ignore Until Activity End']} value={cam.fpAfterMaxSeqCountPolicy} onChange={(v) => set('fpAfterMaxSeqCountPolicy', v)} />
           </div>
-          <SwitchCard label="Power Save Idle Mode" checked={cam.powerSaveIdleMode} onChange={(v) => setCamField('powerSaveIdleMode', v)} />
-          <StatusText text={camStatus} ok={!!camStatus?.startsWith('Saved')} />
-          <button
-            className="full"
-            disabled={!camLoaded}
-            onClick={async () => setCamStatus(await saveWithAck(GattUuids.CAMERA_CONFIG, GattUuids.CAMERA_CONFIG_STATUS, buildCameraConfig(cam)))}
-          >
-            Save Camera Logic
-          </button>
-        </>
-      )}
-
-      {isFeeder && (
-        <>
-          <SwitchCard label="Feeder Enabled" checked={feeder.enabled} onChange={(v) => setFeederField('enabled', v)} />
-          <HoldButton label="Run Pump (Hold)" disabled={!ready} onPress={startPump} onRelease={stopPump} />
-          <div className="card col gap12">
-            <div className="title-m">Pump Timer</div>
-            <NumberField label="Pump On Time (ms)" value={feeder.pumpOnMs} onChange={(v) => setFeederField('pumpOnMs', v)} maxDigits={7} />
-            <NumberField label="Pump Off Time (ms)" value={feeder.pumpOffMs} onChange={(v) => setFeederField('pumpOffMs', v)} maxDigits={7} />
-          </div>
-          <div className="card col gap12">
-            <div className="title-m">Pulse Stretch</div>
-            <NumberField label="Minimum Pulse Width (ms)" value={feeder.pulseStretchMinMs} onChange={(v) => setFeederField('pulseStretchMinMs', v)} maxDigits={5} />
-          </div>
-          <StatusText text={feederStatus} ok={!!feederStatus?.startsWith('Saved')} />
-          <button
-            className="full"
-            disabled={!feederLoaded}
-            onClick={async () => setFeederStatus(await saveWithAck(GattUuids.FEEDER_CONFIG, GattUuids.FEEDER_CONFIG_STATUS, buildFeederConfig(feeder)))}
-          >
-            Save Feeder Settings
-          </button>
-        </>
-      )}
-
-      <div className="card col gap12">
-        <div className="title-m">Device Settings</div>
-        <TextField label="Device Name" value={name} maxLength={20} onChange={setName} />
-        <Select label="Device Type" value={type} options={DEVICE_TYPES} display={deviceTypeName} onChange={setType} />
-        <Select label="Battery Chemistry" value={chem} options={CHEMISTRIES} display={chemistryName} onChange={setChem} />
-        <CellCountSelect value={cells} onChange={setCells} />
-        <KitSelect value={kit} onChange={setKit} />
-      </div>
-      <StatusText text={saveStatus} ok={!!saveStatus?.startsWith('Saved')} />
-      <button
-        className="full"
-        onClick={async () => {
-          const ok = ready && (await writeDeviceSettings(name, type, chem, cells, kit))
-          setSaveStatus(ok ? 'Saved successfully' : 'Save failed – not connected')
-        }}
-      >
-        Save
-      </button>
-
-      <CalibrationCard
-        title="External Battery Calibration"
-        help="Connect battery and enter the actual pack voltage measured with a multimeter, then click Set Cal."
-        value={cal}
-        onChange={setCal}
-        status={calStatus}
-        ready={ready}
-        onSet={async () => setCalStatus((await api.gattWrite(GattUuids.CAL_SET, calibrationBytes(parseFloat(cal) || 0, 30000))) ? 'Calibration set' : 'Write failed')}
-        onReset={async () => setCalStatus((await api.gattWrite(GattUuids.CAL_SET, new Uint8Array([0, 0]))) ? 'Reset to default' : 'Write failed')}
-      />
-      <CalibrationCard
-        title="Internal CR2032 Calibration"
-        help="Enter the actual CR2032 coin cell voltage measured with a multimeter, then click Set Cal."
-        value={intCal}
-        onChange={setIntCal}
-        status={intCalStatus}
-        ready={ready}
-        onSet={async () => setIntCalStatus((await api.gattWrite(GattUuids.INT_CAL_SET, calibrationBytes(parseFloat(intCal) || 0, 5000))) ? 'Calibration set' : 'Write failed')}
-        onReset={async () => setIntCalStatus((await api.gattWrite(GattUuids.INT_CAL_SET, new Uint8Array([0, 0]))) ? 'Reset to default' : 'Write failed')}
-      />
-
-      <div className="card col gap12">
-        <div className="title-m">Device Info</div>
-        <div className="row evenly">
-          <StatItem label="Chemistry" value={chemistryName(d.batteryChemistry)} />
-          <StatItem label="Cells" value={`${d.cellCount}`} />
-          <StatItem label="Signal" value={`${d.rssi} dBm`} />
         </div>
-        <Divider />
-        <div className="row evenly">
-          <StatItem label="Internal Battery" value={`${d.batteryPercent}%`} />
-          <StatItem label="Internal Voltage" value={`${volts(d.voltageMillivolts)} V`} />
+        <div className="card col gap12">
+          <div className="title-m">Timing</div>
+          <div className="fields-2">
+            <NumberField label="Wake HP Hold (ms)" value={cam.wakeHalfPressHoldSec} onChange={(v) => set('wakeHalfPressHoldSec', v)} maxDigits={5} />
+            <NumberField label="Min HP Before Shutter (ms)" value={cam.minHalfPressBeforeShutter} onChange={(v) => set('minHalfPressBeforeShutter', v)} maxDigits={5} />
+            <NumberField label="Shutter Pulse Duration (ms)" value={cam.shutterPulseDuration} onChange={(v) => set('shutterPulseDuration', v)} maxDigits={5} />
+            <NumberField label="Frame Spacing (ms)" value={cam.startFrameSpacingTicks} onChange={(v) => set('startFrameSpacingTicks', v)} maxDigits={5} />
+            <NumberField label="Post-Shutter HP Hold (ms)" value={cam.postShutterHpHoldTenths} onChange={(v) => set('postShutterHpHoldTenths', v)} maxDigits={5} />
+            <NumberField label="HP Debounce (ms)" value={cam.hpDebounceMs} onChange={(v) => set('hpDebounceMs', v)} />
+            <NumberField label="FP Debounce (ms)" value={cam.fpDebounceMs} onChange={(v) => set('fpDebounceMs', v)} />
+            <NumberField label="FP Ignore Gap (ms)" value={cam.fullPressIgnoreGapTenths} onChange={(v) => set('fullPressIgnoreGapTenths', v)} maxDigits={5} />
+          </div>
         </div>
-        <Divider />
-        <div className="row evenly"><StatItem label="MAC Address" value={d.address} /></div>
-        {d.firmwareBuild !== '' && (
-          <>
-            <Divider />
-            <div className="row evenly"><StatItem label="Built" value={d.firmwareBuild} /></div>
-          </>
-        )}
       </div>
+      <div className="row">
+        <button
+          disabled={!c.camLoaded || !c.ready}
+          onClick={async () => c.setCamStatus(await c.saveWithAck(GattUuids.CAMERA_CONFIG, GattUuids.CAMERA_CONFIG_STATUS, buildCameraConfig(cam)))}
+        >
+          Save Camera Logic
+        </button>
+        <StatusText text={c.camStatus} ok={!!c.camStatus?.startsWith('Saved')} />
+      </div>
+    </div>
+  )
+}
 
-      <button
-        className="outlined danger full"
-        disabled={!ready}
-        onClick={async () => {
-          await api.gattWrite(GattUuids.FACTORY_RESET, new Uint8Array([0x01]))
-          await api.gattDisconnect()
-          props.onFactoryReset()
-        }}
-      >
-        Factory Reset
-      </button>
-      <button className="outlined full" onClick={() => void sendLog()}>Send Log</button>
-    </Screen>
+export function FeederTab({ c }: { c: DeviceConfig }) {
+  const f = c.feeder
+  const set = c.setFeederField
+  return (
+    <div className="stack">
+      <NotReady c={c} />
+      <div className="grid-2">
+        <SwitchCard label="Feeder Enabled" checked={f.enabled} onChange={(v) => set('enabled', v)} />
+        <div className="card col gap8">
+          <HoldButton label="Run Pump (Hold)" disabled={!c.ready} onPress={c.startPump} onRelease={c.stopPump} />
+          <span className="body-s muted">The pump runs while the button is held.</span>
+        </div>
+        <div className="card col gap12">
+          <div className="title-m">Pump Timer</div>
+          <NumberField label="Pump On Time (ms)" value={f.pumpOnMs} onChange={(v) => set('pumpOnMs', v)} maxDigits={7} />
+          <NumberField label="Pump Off Time (ms)" value={f.pumpOffMs} onChange={(v) => set('pumpOffMs', v)} maxDigits={7} />
+        </div>
+        <div className="card col gap12">
+          <div className="title-m">Pulse Stretch</div>
+          <NumberField label="Minimum Pulse Width (ms)" value={f.pulseStretchMinMs} onChange={(v) => set('pulseStretchMinMs', v)} maxDigits={5} />
+        </div>
+      </div>
+      <div className="row">
+        <button
+          disabled={!c.feederLoaded || !c.ready}
+          onClick={async () => c.setFeederStatus(await c.saveWithAck(GattUuids.FEEDER_CONFIG, GattUuids.FEEDER_CONFIG_STATUS, buildFeederConfig(f)))}
+        >
+          Save Feeder Settings
+        </button>
+        <StatusText text={c.feederStatus} ok={!!c.feederStatus?.startsWith('Saved')} />
+      </div>
+    </div>
+  )
+}
+
+export function CalibrationTab({ c }: { c: DeviceConfig }) {
+  return (
+    <div className="stack">
+      <NotReady c={c} />
+      <div className="grid-2">
+        <CalibrationCard
+          title="External Battery Calibration"
+          help="Connect battery and enter the actual pack voltage measured with a multimeter, then click Set Cal."
+          value={c.cal}
+          onChange={c.setCal}
+          status={c.calStatus}
+          ready={c.ready}
+          onSet={async () => c.setCalStatus((await api.gattWrite(GattUuids.CAL_SET, calibrationBytes(parseFloat(c.cal) || 0, 30000))) ? 'Calibration set' : 'Write failed')}
+          onReset={async () => c.setCalStatus((await api.gattWrite(GattUuids.CAL_SET, new Uint8Array([0, 0]))) ? 'Reset to default' : 'Write failed')}
+        />
+        <CalibrationCard
+          title="Internal CR2032 Calibration"
+          help="Enter the actual CR2032 coin cell voltage measured with a multimeter, then click Set Cal."
+          value={c.intCal}
+          onChange={c.setIntCal}
+          status={c.intCalStatus}
+          ready={c.ready}
+          onSet={async () => c.setIntCalStatus((await api.gattWrite(GattUuids.INT_CAL_SET, calibrationBytes(parseFloat(c.intCal) || 0, 5000))) ? 'Calibration set' : 'Write failed')}
+          onReset={async () => c.setIntCalStatus((await api.gattWrite(GattUuids.INT_CAL_SET, new Uint8Array([0, 0]))) ? 'Reset to default' : 'Write failed')}
+        />
+      </div>
+    </div>
+  )
+}
+
+export function HubTab(props: {
+  c: DeviceConfig
+  nameForAddress: (addr: string) => string | null
+  onOpenCameraLogs: () => void
+  onOpenDeviceHistory: (addr: string) => void
+}) {
+  const { c } = props
+  const notHub = c.ready && !c.isCameraHub
+  return (
+    <div className="grid-2">
+      <div className="card col gap8">
+        <div className="title-m">Camera Logs (SD card)</div>
+        <div className="body-s muted">
+          Starts the Hub's WiFi, joins it from this PC, then lists, downloads and deletes the Hub's SD-card logs.
+          Downloaded logs also feed the Graphs tab.
+        </div>
+        {notHub && <div className="body-s error">This Camera doesn't expose the Hub log service (nRF52 firmware).</div>}
+        <div className="row">
+          {/* Debug builds allow it for every Camera so the mock-server path is reachable without Hub hardware. */}
+          <button disabled={!(api.isDebug || (c.ready && c.isCameraHub))} onClick={props.onOpenCameraLogs}>Open Camera Logs</button>
+        </div>
+      </div>
+      {!notHub && <NearbyDevicesCard nameForAddress={props.nameForAddress} onOpen={props.onOpenDeviceHistory} />}
+    </div>
   )
 }
 

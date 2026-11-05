@@ -1,7 +1,9 @@
 // The renderer's view of the main process (exposed by src/preload as window.camtraption).
 
 import type { HubHttpStatus, NearbyDevice, RemoteLogFile } from './hubProtocol'
-import type { AdapterState, BleDevice, CachedHubLog, DeviceHistoryEntry, GattState, GattStatus } from './types'
+import type {
+  AdapterState, BleDevice, CachedHubLog, DeviceHistoryEntry, GattState, GattStatus, TelemetrySample
+} from './types'
 
 export interface DownloadProgress {
   key: string
@@ -31,6 +33,8 @@ export interface CamtraptionApi {
   loadCatalog(cameraAddress: string): Promise<CachedHubLog[]>
   removeCached(entry: CachedHubLog): Promise<void>
   readLogTexts(entries: CachedHubLog[]): Promise<[filename: string, text: string][]>
+  /** Live readings recorded by this app, per address, between the two times (ms). */
+  loadTelemetry(addresses: string[], fromMs: number, toMs: number): Promise<Record<string, TelemetrySample[]>>
 
   // GATT
   onGattStatus(cb: (s: GattStatus) => void): () => void

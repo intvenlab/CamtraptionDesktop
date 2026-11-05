@@ -11,7 +11,7 @@ import { GattManager } from './ble/gatt'
 import { Scanner } from './ble/scanner'
 import { HubHttpClient, HubHttpError } from './hub/http'
 import { HubWifiManager } from './hub/wifi'
-import { CameraLogCatalogStore, DeviceHistoryStore, GroupNameStore, KnownDeviceStore } from './stores'
+import { CameraLogCatalogStore, DeviceHistoryStore, GroupNameStore, KnownDeviceStore, TelemetryStore } from './stores'
 
 const isDebug = !app.isPackaged
 let win: BrowserWindow | null = null
@@ -26,12 +26,13 @@ app.whenReady().then(() => {
   const history = new DeviceHistoryStore(dataDir)
   const groupNames = new GroupNameStore(dataDir)
   const catalog = new CameraLogCatalogStore(dataDir)
+  const telemetry = new TelemetryStore(dataDir)
   const wifi = new HubWifiManager()
 
   let adapter: { state: AdapterState; error: string | null } = { state: 'unknown', error: null }
   const scanner = new Scanner(
     (devices: BleDevice[]) => {
-      devices.forEach((d) => known.save(d))
+      devices.forEach((d) => { known.save(d); telemetry.record(d) })
       send('devices', devices)
     },
     (state, error) => {
@@ -65,6 +66,7 @@ app.whenReady().then(() => {
   handle('loadHistory', (addr: string) => history.load(addr))
   handle('appendHistory', (addr: string, e: DeviceHistoryEntry) => history.append(addr, e))
   handle('loadCatalog', (addr: string) => catalog.loadFor(addr))
+  handle('loadTelemetry', (addrs: string[], from: number, to: number) => telemetry.load(addrs, from, to))
   handle('removeCached', (e: CachedHubLog) => catalog.remove(e))
   handle('readLogTexts', async (entries: CachedHubLog[]) =>
     Promise.all(entries.filter((e) => existsSync(e.localCachePath))
@@ -137,6 +139,7 @@ app.whenReady().then(() => {
   win.webContents.on('console-message', (e) => {
     if (e.level === 'error') console.error('[renderer]', e.message)
   })
+  win.webContents.on('render-process-gone', (_e, details) => console.error('[renderer] process gone:', details.reason, details.exitCode))
   if (isDebug && process.env['ELECTRON_RENDERER_URL']) win.loadURL(process.env['ELECTRON_RENDERER_URL'])
   else win.loadFile(join(__dirname, '../renderer/index.html'))
 
@@ -151,6 +154,7 @@ app.whenReady().then(() => {
     e.preventDefault()
     cleanedUp = true
     known.flush()
+    telemetry.flush()
     scanner.stop()
     void Promise.allSettled([gatt.disconnect(), wifi.release()]).finally(() => app.quit())
   })
