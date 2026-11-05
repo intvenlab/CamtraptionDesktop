@@ -1,0 +1,48 @@
+{
+  "name": "camtraption-desktop",
+  "productName": "Camtraption Desktop",
+  "version": "0.1.0",
+  "description": "Desktop (Electron) port of Camtraption Assistant 2: monitor and configure Camtraptions BLE devices and ESP32 Camera Hub logs.",
+  "main": "./out/main/index.js",
+  "author": "BRIAN K LOSO",
+  "private": true,
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "start": "electron-vite preview",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
+    "test": "vitest run",
+    "dist": "electron-vite build && electron-builder --win"
+  },
+  "build": {
+    "appId": "com.ivlabs.camtraptiondesktop",
+    "productName": "Camtraption Desktop",
+    "files": [
+      "out/**/*"
+    ],
+    "asarUnpack": [
+      "node_modules/@stoprocent/noble/**",
+      "node_modules/@stoprocent/bluetooth-hci-socket/**"
+    ],
+    "win": {
+      "target": "nsis"
+    }
+  },
+  "dependencies": {
+    "@stoprocent/noble": "^2.8.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.2.1",
+    "electron": "^45.2.3",
+    "electron-builder": "^26.18.0",
+    "electron-vite": "^6.0.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.6",
+    "vitest": "^5.1.0"
+  }
+}
