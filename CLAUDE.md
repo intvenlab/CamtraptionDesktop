@@ -38,7 +38,8 @@ Electron's stock `ffmpeg.dll` is quarantined by Defender here; `scripts/fix-ffmp
   - `index.ts`: IPC handlers.
 - `src/preload/index.ts` exposes `window.camtraption`.
 - Startup: `index.ts` shows `src/renderer/splash.html` (frameless, transparent; a second Vite input in
-  `electron.vite.config.ts`) until the main window's `ready-to-show`, at least 1.5 s.
+  `electron.vite.config.ts`) until the main window's `ready-to-show`, at least 3 s.
+  Scanning starts at launch (not on page load) so the splash can show a live device count.
 - Logo/icon come from the Android app's `res/drawable/loso_logo.png`: `build/icon.ico` + `build/icon.png` (installer and
   exe icon) and `src/renderer/src/assets/logo.png` (app bar, empty-pane watermark). The splash artwork is
   `img/CamtrationDesktopLogo2.png` (transparent), downscaled to `src/renderer/src/assets/splash.png`.

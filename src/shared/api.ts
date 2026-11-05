@@ -49,7 +49,8 @@ export interface CamtraptionApi {
 
   // Camera Hub WiFi + HTTP
   hubWifiConnect(ssid: string, password: string, hubIp: string): Promise<HubResult<void>>
-  hubWifiRelease(): Promise<void>
+  /** restorePrevious = false when moving straight on to another Hub (the final release restores). */
+  hubWifiRelease(restorePrevious?: boolean): Promise<void>
   hubStatus(baseUrl: string): Promise<HubResult<HubHttpStatus>>
   hubNearby(baseUrl: string): Promise<HubResult<NearbyDevice[]>>
   hubListLogs(baseUrl: string): Promise<HubResult<RemoteLogFile[]>>

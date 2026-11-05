@@ -269,15 +269,14 @@ export default function App() {
                 })}
               </div>
             </div>
-            {tab === 'graphs' && (
-              <div className="body">
-                <div className="detail">
-                  <PaneActiveContext.Provider value={false}>
-                    <GraphsScreen devices={deviceList} groupNames={groupNames} nameForAddress={nameForAddress} />
-                  </PaneActiveContext.Provider>
-                </div>
+            {/* Graphs stays mounted too, so a running "Download Hub Logs" keeps its progress while you look at Devices. */}
+            <div className="body" style={{ display: tab === 'graphs' ? 'flex' : 'none' }}>
+              <div className="detail">
+                <PaneActiveContext.Provider value={false}>
+                  <GraphsScreen devices={deviceList} groupNames={groupNames} nameForAddress={nameForAddress} />
+                </PaneActiveContext.Provider>
               </div>
-            )}
+            </div>
           </div>
           {toast && <div className="toast">{toast}</div>}
         </BackContext.Provider>

@@ -16,7 +16,7 @@ import { CameraLogCatalogStore, DeviceHistoryStore, GroupNameStore, KnownDeviceS
 const isDebug = !app.isPackaged
 let win: BrowserWindow | null = null
 
-const SPLASH_MIN_MS = 1_500
+const SPLASH_MIN_MS = 3_000
 const SPLASH_MAX_MS = 15_000
 
 /** Loads one of the renderer's pages: the Vite dev server in `npm run dev`, else the built file. */
@@ -30,7 +30,7 @@ function loadPage(w: BrowserWindow, page: 'index' | 'splash') {
 function createSplash(): BrowserWindow {
   const s = new BrowserWindow({
     width: 580,
-    height: 540,
+    height: 560,
     frame: false,
     transparent: true,
     backgroundColor: '#00000000',
@@ -45,8 +45,18 @@ function createSplash(): BrowserWindow {
     icon: app.isPackaged ? undefined : join(__dirname, '../../build/icon.ico'),
     webPreferences: { sandbox: true, contextIsolation: true }
   })
+  // Above the main window and anything else while the app starts.
+  s.setAlwaysOnTop(true, 'screen-saver')
   loadPage(s, 'splash')
   return s
+}
+
+/** Sets the splash's status line (the page has no scripts of its own). */
+function setSplashStatus(s: BrowserWindow, text: string) {
+  if (s.isDestroyed()) return
+  void s.webContents
+    .executeJavaScript(`{ const el = document.getElementById('status'); if (el) el.textContent = ${JSON.stringify(text)} }`)
+    .catch(() => {})
 }
 
 function send(channel: string, ...args: unknown[]) {
@@ -54,9 +64,11 @@ function send(channel: string, ...args: unknown[]) {
 }
 
 app.whenReady().then(() => {
-  // Transparent splash first; the main window is shown once it has rendered (and the splash has had a moment).
+  // Transparent splash first. Scanning starts straight away and the splash counts what it finds; the main
+  // window stays hidden until it has rendered and the splash has been up for SPLASH_MIN_MS.
   const splash = createSplash()
   const splashShownAt = Date.now()
+  const splashSeen = new Set<string>()
   const dataDir = app.getPath('userData')
   const known = new KnownDeviceStore(dataDir)
   const history = new DeviceHistoryStore(dataDir)
@@ -70,12 +82,23 @@ app.whenReady().then(() => {
     (devices: BleDevice[]) => {
       devices.forEach((d) => { known.save(d); telemetry.record(d) })
       send('devices', devices)
+      if (!splash.isDestroyed()) {
+        devices.forEach((d) => splashSeen.add(d.address))
+        setSplashStatus(splash, `Scanning… ${splashSeen.size} device${splashSeen.size === 1 ? '' : 's'} found`)
+      }
     },
     (state, error) => {
       adapter = { state, error }
       send('adapterState', state, error)
+      if (!splash.isDestroyed() && state !== 'poweredOn' && state !== 'unknown') {
+        setSplashStatus(splash, state === 'poweredOff' ? 'Bluetooth is off' : 'Bluetooth unavailable')
+      }
     }
   )
+  splash.webContents.once('did-finish-load', () => setSplashStatus(splash, 'Scanning for devices…'))
+  // Scan from the start so the splash can show progress; adverts repeat, so nothing is lost while the
+  // main window's page is still loading.
+  scanner.start()
   const gatt = new GattManager((addr) => scanner.peripherals.get(addr), (s) => send('gattStatus', s))
 
   /** Hub HTTP calls: errors become values so the renderer gets the code (409 etc.) back. */
@@ -118,7 +141,7 @@ app.whenReady().then(() => {
   handle('gattWaitForNotification', (uuid: string, t: number) => gatt.waitForNotification(uuid, t))
 
   handle('hubWifiConnect', (ssid: string, pass: string, ip: string) => hub(() => wifi.connect(ssid, pass, ip)))
-  handle('hubWifiRelease', () => wifi.release())
+  handle('hubWifiRelease', (restorePrevious?: boolean) => wifi.release(restorePrevious ?? true))
   handle('hubStatus', (base: string) => hub(() => new HubHttpClient(base).status()))
   handle('hubNearby', (base: string) => hub(() => new HubHttpClient(base).nearby()))
   handle('hubListLogs', (base: string) => hub(() => new HubHttpClient(base).listLogs()))
@@ -186,15 +209,15 @@ app.whenReady().then(() => {
   const reveal = () => {
     if (revealed || !win || win.isDestroyed()) return
     revealed = true
-    win.show()
+    // Close the splash before showing the main window so the main window never draws over it.
     if (!splash.isDestroyed()) splash.destroy()
+    win.show()
   }
   win.once('ready-to-show', () => setTimeout(reveal, Math.max(0, SPLASH_MIN_MS - (Date.now() - splashShownAt))))
   setTimeout(reveal, SPLASH_MAX_MS)  // never leave the user staring at the splash
 
   ipcMain.on('isDebugSync', (e) => { e.returnValue = isDebug })
 
-  win.webContents.once('did-finish-load', () => scanner.start())
 
   // Hold the quit until the Hub WiFi is released (reconnects the PC's normal network) and GATT is closed.
   let cleanedUp = false

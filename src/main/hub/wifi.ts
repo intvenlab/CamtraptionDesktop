@@ -79,7 +79,10 @@ export class HubWifiManager {
     const iface = await currentInterface().catch(() => null)
     if (!iface) throw new Error('No WiFi adapter found on this PC')
     this.interfaceName = iface.name
-    if (iface.ssid !== ssid) this.previousProfile = iface.state.toLowerCase() === 'connected' ? iface.profile : null
+    // Keep a previous network already waiting to be restored (several Hubs in a row, see release()).
+    if (iface.ssid !== ssid && this.previousProfile == null) {
+      this.previousProfile = iface.state.toLowerCase() === 'connected' ? iface.profile : null
+    }
 
     const file = join(tmpdir(), `camtraption-hub-${Date.now()}.xml`)
     await writeFile(file, profileXml(ssid, password), 'utf8')
@@ -100,14 +103,22 @@ export class HubWifiManager {
     throw new Error(`Couldn't join ${ssid} (timed out)`)
   }
 
-  /** Forgets the Hub network and reconnects the previous one. Safe to call when not joined. */
-  async release(): Promise<void> {
+  /**
+   * Forgets the Hub network and reconnects the previous one. Safe to call when not joined.
+   * restorePrevious = false (moving straight on to another Hub) leaves the PC off WiFi and remembers the
+   * previous network for the final release.
+   */
+  async release(restorePrevious = true): Promise<void> {
     const ssid = this.joinedSsid
-    const prev = this.previousProfile
+    const prev = restorePrevious ? this.previousProfile : null
     const iface = this.interfaceName
     this.joinedSsid = null
-    this.previousProfile = null
-    if (!ssid || process.platform !== 'win32') return
+    if (restorePrevious) this.previousProfile = null
+    if (process.platform !== 'win32') return
+    if (!ssid) {
+      if (prev) await netsh(['wlan', 'connect', kv('name', prev), ...(iface ? [kv('interface', iface)] : [])]).catch(() => {})
+      return
+    }
     const ifaceArg = iface ? [kv('interface', iface)] : []
     await netsh(['wlan', 'disconnect', ...ifaceArg]).catch(() => {})
     await netsh(['wlan', 'delete', 'profile', kv('name', ssid), ...ifaceArg]).catch(() => {})

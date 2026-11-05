@@ -6,13 +6,14 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { GattUuids } from '../../../shared/gattUuids'
 import { friendlyLogName } from '../../../shared/hubLogParser'
 import {
-  CameraLogStatus, HUB_STREAM_CAMERA, HUB_STREAM_SCAN, HubCommands, HubWifiApInfo, NearbyDevice, RemoteLogFile,
-  apBaseUrl, parseCameraLogStatus, parseHubWifiApInfo, sortNearbyForDisplay, statusMatches
+  CameraLogStatus, HUB_STREAM_CAMERA, HUB_STREAM_SCAN, HubCommands, NearbyDevice, RemoteLogFile, parseCameraLogStatus,
+  sortNearbyForDisplay, statusMatches
 } from '../../../shared/hubProtocol'
 import { formatBytes, formatEpoch } from '../../../shared/scanList'
 import { BleDevice, CachedHubLog } from '../../../shared/types'
 import { api, sleep } from '../api'
 import { useGattStatus, useToast } from '../context'
+import { HubSyncError, closeHubSession, openHubSession, sameFile } from '../hubSync'
 import { ConfirmDialog, Divider, GattStatusBanner, NearbyDeviceRow, Progress, Screen, TextField } from '../components'
 
 type SyncPhase = 'IDLE' | 'STARTING_AP' | 'JOINING_WIFI' | 'VERIFYING' | 'READY' | 'LOST' | 'STOPPING' | 'ERROR'
@@ -30,11 +31,6 @@ const PHASE_LABEL: Record<SyncPhase, string> = {
 
 /** Phases where an HTTP session exists (file list + Disconnect are shown). */
 const hasSession = (p: SyncPhase) => p === 'READY' || p === 'LOST'
-
-class SyncError extends Error {}
-
-const sameFile = (c: CachedHubLog, r: RemoteLogFile) =>
-  c.stream === r.stream && c.filename === r.filename && c.sizeBytes === r.sizeBytes
 
 const byStreamNewestFirst = (a: RemoteLogFile, b: RemoteLogFile) =>
   a.stream < b.stream ? -1 : a.stream > b.stream ? 1 : a.filename < b.filename ? 1 : a.filename > b.filename ? -1 : 0
@@ -105,12 +101,9 @@ export default function CameraLogsScreen(props: {
   const stopSync = async () => {
     setBaseUrl(null)
     setRemoteFiles([])
-    if (joinedWifi.current) {
-      joinedWifi.current = false
-      await api.hubWifiRelease()
-    }
-    // Best effort: if this doesn't reach the Hub, it turns its AP off by itself shortly after we leave.
-    await api.gattWrite(GattUuids.CAMERA_WIFI_AP_CONTROL, HubCommands.AP_STOP, 3_000)
+    const joined = joinedWifi.current
+    joinedWifi.current = false
+    await closeHubSession(joined)
   }
   const stopSyncRef = useRef(stopSync)
   stopSyncRef.current = stopSync
@@ -118,30 +111,7 @@ export default function CameraLogsScreen(props: {
   const startSync = async () => {
     setMessage(null)
     try {
-      setPhase('STARTING_AP')
-      await api.gattWrite(GattUuids.CAMERA_TIME_SYNC, HubCommands.nowTimeSync(), 3_000)
-      const started = await api.gattWrite(GattUuids.CAMERA_WIFI_AP_CONTROL, HubCommands.AP_START, 3_000)
-      if (!started) throw new SyncError("Couldn't ask the Hub to start WiFi (is it still connected over Bluetooth?)")
-
-      let info: HubWifiApInfo | null = null
-      const deadline = Date.now() + 20_000
-      while (Date.now() < deadline) {
-        info = parseHubWifiApInfo(await api.gattRead(GattUuids.CAMERA_WIFI_AP_INFO, 3_000))
-        if (info?.apState === 'UP' || info?.apState === 'ERROR') break
-        await sleep(500)
-      }
-      if (!info || info.apState !== 'UP') throw new SyncError(`Hub WiFi didn't start (state: ${info?.apState ?? 'no response'})`)
-
-      setPhase('JOINING_WIFI')
-      joinedWifi.current = true
-      const joined = await api.hubWifiConnect(info.ssid, info.password, info.ip)
-      if (!joined.ok) throw new SyncError(`Couldn't join ${info.ssid}: ${joined.error}`)
-
-      setPhase('VERIFYING')
-      const url = apBaseUrl(info)
-      const status = await api.hubStatus(url)
-      if (!status.ok) throw new SyncError(status.error)
-      if (!statusMatches(status.value, d.address)) throw new SyncError(`Joined network belongs to a different Hub (${status.value.bleMac})`)
+      const url = await openHubSession(d.address, setPhase, () => { joinedWifi.current = true })
       setBaseUrl(url)
       await refreshRemote(url)
       setPhase('READY')
@@ -158,7 +128,7 @@ export default function CameraLogsScreen(props: {
       setPhase('VERIFYING')
       const url = mockUrl.trim()
       const status = await api.hubStatus(url)
-      if (!status.ok) throw new SyncError(status.error)
+      if (!status.ok) throw new HubSyncError(status.error)
       setBaseUrl(url)
       await refreshRemote(url)
       setPhase('READY')

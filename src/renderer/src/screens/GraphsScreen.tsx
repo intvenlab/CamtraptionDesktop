@@ -10,7 +10,8 @@ import {
 import { BleDevice, DeviceType, TelemetrySample, deviceIcon } from '../../../shared/types'
 import { api } from '../api'
 import Chart, { ChartLine, SERIES_COLORS } from '../Chart'
-import { Screen, Segmented } from '../components'
+import { ConfirmDialog, Screen, Segmented } from '../components'
+import { HubSyncState, SESSION_PHASE_LABEL, downloadAllHubLogs } from '../hubSync'
 
 type Source = 'live' | 'log' | 'both'
 type Range = '1h' | '24h' | '7d' | '30d' | 'all'
@@ -44,6 +45,9 @@ export default function GraphsScreen(props: {
   const [loadingLogs, setLoadingLogs] = useState(false)
   const [now, setNow] = useState(Date.now())
   const [logsVersion, setLogsVersion] = useState(0)
+  const [confirmSync, setConfirmSync] = useState(false)
+  const [sync, setSync] = useState<{ hubs: BleDevice[]; states: Record<string, HubSyncState>; running: boolean } | null>(null)
+  const cancelSync = useRef(false)
 
   const configured = useMemo(() => props.devices.filter((d) => d.isConfigured), [props.devices])
   const kits = useMemo(() => [...new Set(configured.map((d) => d.groupId).filter((g) => g !== 0))].sort((a, b) => a - b), [configured])
@@ -155,11 +159,40 @@ export default function GraphsScreen(props: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }), [metrics, telemetry, logs, from, now, allowed, source, colorOf, wantLive, wantLog])
 
+  // Hubs to visit: configured Hubs currently advertising.
+  const hubsInRange = props.devices.filter((d) => d.isConfigured && d.isConnected && d.hubNearbyCount >= 0)
+
+  const startSync = async () => {
+    setConfirmSync(false)
+    const hubs = hubsInRange
+    cancelSync.current = false
+    setSync({ hubs, states: Object.fromEntries(hubs.map((h) => [h.address, { kind: 'waiting' } as HubSyncState])), running: true })
+    await downloadAllHubLogs(
+      hubs,
+      (address, state) => setSync((cur) => (cur ? { ...cur, states: { ...cur.states, [address]: state } } : cur)),
+      () => cancelSync.current
+    )
+    setSync((cur) => (cur ? { ...cur, running: false } : cur))
+    setLogsVersion((v) => v + 1)
+  }
+
   return (
     <Screen
       title="Graphs"
       subtitle={`${wantLive ? 'Live telemetry recorded by this PC' : ''}${wantLive && wantLog ? ' + ' : ''}${wantLog ? `${logFiles} downloaded Hub log file${logFiles === 1 ? '' : 's'}` : ''}`}
-      actions={wantLog && <button className="outlined small" disabled={loadingLogs} onClick={() => setLogsVersion((v) => v + 1)}>{loadingLogs ? 'Loading…' : 'Reload logs'}</button>}
+      actions={
+        <div className="row">
+          {wantLog && <button className="outlined small" disabled={loadingLogs} onClick={() => setLogsVersion((v) => v + 1)}>{loadingLogs ? 'Loading…' : 'Reload logs'}</button>}
+          <button
+            className="small"
+            disabled={sync?.running === true || hubsInRange.length === 0}
+            title={hubsInRange.length === 0 ? 'No Hubs in range' : `${hubsInRange.length} Hub${hubsInRange.length === 1 ? '' : 's'} in range`}
+            onClick={() => setConfirmSync(true)}
+          >
+            Download Hub Logs
+          </button>
+        </div>
+      }
     >
       <div className="card toolbar">
         <div className="group">
@@ -192,6 +225,35 @@ export default function GraphsScreen(props: {
           ))}
         </div>
       </div>
+
+      {sync && (
+        <HubSyncCard
+          hubs={sync.hubs}
+          states={sync.states}
+          running={sync.running}
+          name={name}
+          onCancel={() => { cancelSync.current = true }}
+          onClose={() => setSync(null)}
+        />
+      )}
+
+      {confirmSync && (
+        <ConfirmDialog
+          title="Download Hub Logs?"
+          text={
+            <>
+              Are you sure you want to connect to all hubs and download logs? This can take several minutes.
+              <br /><br />
+              {hubsInRange.length} Hub{hubsInRange.length === 1 ? '' : 's'} in range. This PC's WiFi switches to each Hub in turn and
+              returns to your network afterwards; any open device connection is closed.
+            </>
+          }
+          confirmLabel="Download"
+          destructive={false}
+          onConfirm={() => void startSync()}
+          onDismiss={() => setConfirmSync(false)}
+        />
+      )}
 
       {wantLog && !loadingLogs && logFiles === 0 && (
         <div className="card body-s muted">
@@ -280,6 +342,59 @@ function ScopePicker(props: {
           ))}
         </div>
       )}
+    </div>
+  )
+}
+
+function syncStateText(s: HubSyncState): { text: string; cls: string } {
+  switch (s.kind) {
+    case 'waiting': return { text: 'Waiting', cls: 'muted' }
+    case 'connecting': return { text: 'Connecting over Bluetooth…', cls: 'accent' }
+    case 'session': return { text: SESSION_PHASE_LABEL[s.phase], cls: 'accent' }
+    case 'downloading': return { text: `Downloading ${s.index} of ${s.total}: ${s.filename}`, cls: 'accent' }
+    case 'done': {
+      const parts = [`${s.downloaded} downloaded`, `${s.upToDate} already here`]
+      if (s.failed > 0) parts.push(`${s.failed} failed`)
+      return { text: parts.join(' · '), cls: s.failed > 0 ? 'warn' : 'green' }
+    }
+    case 'skipped': return { text: s.message, cls: 'muted' }
+    case 'error': return { text: s.message, cls: 'error' }
+  }
+}
+
+/** Progress of "Download Hub Logs": one line per Hub. */
+function HubSyncCard(props: {
+  hubs: BleDevice[]
+  states: Record<string, HubSyncState>
+  running: boolean
+  name: (addr: string) => string
+  onCancel: () => void
+  onClose: () => void
+}) {
+  const [cancelling, setCancelling] = useState(false)
+  return (
+    <div className="card col gap8">
+      <div className="row between">
+        <span className="title-m">{props.running ? 'Downloading Hub logs…' : 'Hub log download finished'}</span>
+        {props.running ? (
+          <button className="outlined small" disabled={cancelling} onClick={() => { setCancelling(true); props.onCancel() }}>
+            {cancelling ? 'Cancelling…' : 'Cancel'}
+          </button>
+        ) : (
+          <button className="text small" onClick={props.onClose}>Close</button>
+        )}
+      </div>
+      {props.hubs.map((h) => {
+        const st = syncStateText(props.states[h.address] ?? { kind: 'waiting' })
+        return (
+          <div key={h.address} className="row">
+            <span>📷</span>
+            <span className="semibold" style={{ minWidth: 140 }}>{props.name(h.address)}</span>
+            <span className={'body-s ' + st.cls}>{st.text}</span>
+          </div>
+        )
+      })}
+      {props.running && <div className="body-s muted">Your WiFi returns to its usual network when this finishes.</div>}
     </div>
   )
 }
